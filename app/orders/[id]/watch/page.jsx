@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import { useParams } from "next/navigation"
 
 const StatusBadge = ({ status }) => {
@@ -35,7 +35,50 @@ export default function WatchPage() {
   const [printState, setPrintState] = useState(null)
   const [error, setError] = useState(null)
   const [lastUpdated, setLastUpdated] = useState(null)
+  const [streamConnected, setStreamConnected] = useState(false)
+  const canvasRef = useRef(null)
+  const wsRef = useRef(null)
 
+  // ── Camera stream via WebSocket ───────────────────────────────
+  useEffect(() => {
+    const secret = process.env.NEXT_PUBLIC_BRIDGE_SECRET
+    const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL
+
+    if (!bridgeUrl) return
+
+    const wsUrl = `${bridgeUrl.replace("https://", "wss://").replace("http://", "ws://")}/stream?secret=${secret}`
+    const ws = new WebSocket(wsUrl)
+    wsRef.current = ws
+
+    ws.binaryType = "arraybuffer"
+
+    ws.onopen = () => setStreamConnected(true)
+    ws.onclose = () => setStreamConnected(false)
+    ws.onerror = () => setStreamConnected(false)
+
+    ws.onmessage = (event) => {
+      // Each message is a MJPEG frame as binary data
+      const blob = new Blob([event.data], { type: "image/jpeg" })
+      const url = URL.createObjectURL(blob)
+      const img = new Image()
+      img.onload = () => {
+        const canvas = canvasRef.current
+        if (!canvas) return
+        const ctx = canvas.getContext("2d")
+        canvas.width = img.width
+        canvas.height = img.height
+        ctx.drawImage(img, 0, 0)
+        URL.revokeObjectURL(url)
+      }
+      img.src = url
+    }
+
+    return () => {
+      ws.close()
+    }
+  }, [])
+
+  // ── Print status polling ──────────────────────────────────────
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch(`/api/print-status?orderId=${orderId}`)
@@ -52,7 +95,6 @@ export default function WatchPage() {
     }
   }, [orderId])
 
-  // Poll every 3 seconds
   useEffect(() => {
     fetchStatus()
     const interval = setInterval(fetchStatus, 3000)
@@ -68,8 +110,8 @@ export default function WatchPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F1EFE8] flex flex-col items-center justify-center p-6">
-      <div className="w-full max-w-lg flex flex-col gap-6">
+    <div className="min-h-screen bg-[#F1EFE8] p-6">
+      <div className="max-w-2xl mx-auto flex flex-col gap-6">
 
         {/* Header */}
         <div className="flex items-center justify-between">
@@ -82,6 +124,26 @@ export default function WatchPage() {
             </h1>
           </div>
           {printState && <StatusBadge status={printState.status} />}
+        </div>
+
+        {/* Camera feed */}
+        <div className="bg-[#2C2C2A] rounded-2xl overflow-hidden aspect-video relative">
+          <canvas
+            ref={canvasRef}
+            className="w-full h-full object-contain"
+          />
+          {!streamConnected && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+              <div className="w-6 h-6 border-2 border-[#EF9F27] border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm text-[#888780]">Connecting to camera...</p>
+            </div>
+          )}
+          {streamConnected && (
+            <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-black/50 px-2.5 py-1 rounded-full">
+              <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
+              <span className="text-xs text-white font-medium">LIVE</span>
+            </div>
+          )}
         </div>
 
         {error ? (
@@ -97,7 +159,6 @@ export default function WatchPage() {
           <>
             {/* Progress card */}
             <div className="bg-white rounded-2xl p-6 flex flex-col gap-5 shadow-sm">
-              {/* Progress bar */}
               <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-semibold text-[#2C2C2A]">Progress</span>
@@ -111,7 +172,6 @@ export default function WatchPage() {
                 </div>
               </div>
 
-              {/* Layer + time */}
               <div className="grid grid-cols-2 gap-4 pt-2 border-t border-[#F1EFE8]">
                 <div className="flex flex-col gap-1">
                   <span className="text-xs text-[#888780] font-medium">Layer</span>
@@ -135,16 +195,8 @@ export default function WatchPage() {
             <div className="bg-white rounded-2xl p-6 shadow-sm">
               <p className="text-xs font-bold tracking-[2px] uppercase text-[#888780] mb-4">Temperatures</p>
               <div className="grid grid-cols-2 gap-6">
-                <TempGauge
-                  label="Nozzle"
-                  current={printState.nozzleTemp}
-                  target={printState.nozzleTarget}
-                />
-                <TempGauge
-                  label="Bed"
-                  current={printState.bedTemp}
-                  target={printState.bedTarget}
-                />
+                <TempGauge label="Nozzle" current={printState.nozzleTemp} target={printState.nozzleTarget} />
+                <TempGauge label="Bed" current={printState.bedTemp} target={printState.bedTarget} />
               </div>
             </div>
 
