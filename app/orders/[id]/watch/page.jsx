@@ -41,7 +41,7 @@ export default function WatchPage() {
 
   // ── Camera stream via WebSocket ───────────────────────────────
   useEffect(() => {
-    const secret = process.env.NEXT_PUBLIC_BRIDGE_SECRET;
+    const secret = process.env.NEXT_PUBLIC_BRIDGE_SECRET || "";
     const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "https://bridge.extrudly.com";
 
     if (!bridgeUrl) return;
