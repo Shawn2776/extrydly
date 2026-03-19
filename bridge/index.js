@@ -18,6 +18,34 @@ if (!PRINTER_IP || !BRIDGE_SECRET) {
   process.exit(1)
 }
 
+// ─── Simple JWT verify (no external deps) ────────────────────────────────────
+function base64urlDecode(str) {
+  str = str.replace(/-/g, "+").replace(/_/g, "/")
+  while (str.length % 4) str += "="
+  return Buffer.from(str, "base64")
+}
+
+function verifyJWT(token) {
+  try {
+    const parts = token.split(".")
+    if (parts.length !== 3) return null
+
+    const signature = crypto
+      .createHmac("sha256", BRIDGE_SECRET)
+      .update(`${parts[0]}.${parts[1]}`)
+      .digest("base64url")
+
+    if (signature !== parts[2]) return null
+
+    const payload = JSON.parse(base64urlDecode(parts[1]).toString())
+    if (payload.exp && Date.now() / 1000 > payload.exp) return null
+
+    return payload
+  } catch {
+    return null
+  }
+}
+
 // ─── In-memory print state ────────────────────────────────────────────────────
 let printState = {
   status: "idle",
@@ -60,21 +88,24 @@ app.get("/status", requireSecret, (req, res) => {
 // ─── HTTP + WebSocket server ──────────────────────────────────────────────────
 const server = http.createServer(app)
 
-// WebSocket — proxies the printer's MJPEG camera stream to the browser
 const wss = new WebSocketServer({ server, path: "/stream" })
 
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, `http://localhost`)
-  const secret = url.searchParams.get("secret")
-  if (secret !== BRIDGE_SECRET) {
+  const token = url.searchParams.get("token")
+
+  // Accept either a valid JWT (customer) or the raw secret (admin/testing)
+  const isRawSecret = token === BRIDGE_SECRET
+  const isValidJWT = !isRawSecret && verifyJWT(token)
+
+  if (!isRawSecret && !isValidJWT) {
+    console.log("🚫  Rejected stream connection — invalid token")
     ws.close(1008, "Unauthorized")
     return
   }
 
   console.log("📺  Client connected to camera stream")
 
-  // The K2 Plus camera is a simple MJPEG stream at http://IP:8000
-  // We fetch it and pipe chunks to the WebSocket client
   const http_ = require("http")
   const camReq = http_.get(`http://${PRINTER_IP}:${PRINTER_CAMERA_PORT}`, (camRes) => {
     camRes.on("data", (chunk) => {
@@ -82,11 +113,7 @@ wss.on("connection", (ws, req) => {
         ws.send(chunk)
       }
     })
-
-    camRes.on("end", () => {
-      ws.close()
-    })
-
+    camRes.on("end", () => ws.close())
     camRes.on("error", (err) => {
       console.error("❌  Camera stream error:", err.message)
       ws.close(1011, "Camera error")
@@ -99,13 +126,12 @@ wss.on("connection", (ws, req) => {
   })
 
   ws.on("close", () => {
-    console.log("📺  Client disconnected, closing camera stream")
+    console.log("📺  Client disconnected")
     camReq.destroy()
   })
 })
 
 // ─── Moonraker WebSocket ──────────────────────────────────────────────────────
-// Connect to Moonraker's WebSocket API for live print state
 const MOONRAKER_WS = `ws://${PRINTER_IP}:${PRINTER_FLUIDD_PORT}/websocket`
 let moonrakerWs = null
 let reconnectTimer = null
@@ -113,39 +139,32 @@ let msgId = 1
 
 function connectMoonraker() {
   console.log(`📡  Connecting to Moonraker at ${MOONRAKER_WS}`)
-
   moonrakerWs = new WebSocket(MOONRAKER_WS)
 
   moonrakerWs.on("open", () => {
     console.log("✅  Moonraker connected")
     clearTimeout(reconnectTimer)
-
-    // Subscribe to printer objects we care about
-    const subscribeMsg = {
+    moonrakerWs.send(JSON.stringify({
       jsonrpc: "2.0",
       method: "printer.objects.subscribe",
       params: {
         objects: {
-          print_stats: null,       // status, filename, layer, duration
-          display_status: null,    // progress
-          extruder: null,          // nozzle temp
-          heater_bed: null,        // bed temp
-          virtual_sdcard: null,    // file progress
+          print_stats: null,
+          display_status: null,
+          extruder: null,
+          heater_bed: null,
+          virtual_sdcard: null,
         }
       },
       id: msgId++,
-    }
-
-    moonrakerWs.send(JSON.stringify(subscribeMsg))
+    }))
   })
 
   moonrakerWs.on("message", (data) => {
     try {
       const msg = JSON.parse(data.toString())
       handleMoonrakerMessage(msg)
-    } catch (e) {
-      // ignore parse errors
-    }
+    } catch {}
   })
 
   moonrakerWs.on("close", () => {
@@ -159,9 +178,7 @@ function connectMoonraker() {
 }
 
 function handleMoonrakerMessage(msg) {
-  // Handle subscription updates
   const status = msg?.params?.status || msg?.result?.status
-
   if (!status) return
 
   const prev = { ...printState }
@@ -169,45 +186,31 @@ function handleMoonrakerMessage(msg) {
   if (status.print_stats) {
     const ps = status.print_stats
     if (ps.state !== undefined) {
-      const stateMap = {
-        standby:  "idle",
-        printing: "printing",
-        paused:   "paused",
-        complete: "finished",
-        error:    "error",
-      }
+      const stateMap = { standby: "idle", printing: "printing", paused: "paused", complete: "finished", error: "error" }
       printState.status = stateMap[ps.state] ?? ps.state
     }
-    if (ps.filename !== undefined)      printState.filename     = ps.filename || null
+    if (ps.filename !== undefined)       printState.filename      = ps.filename || null
     if (ps.print_duration !== undefined) printState.printDuration = Math.round(ps.print_duration)
-    if (ps.info?.current_layer !== undefined) printState.layer = ps.info.current_layer
+    if (ps.info?.current_layer !== undefined) printState.layer       = ps.info.current_layer
     if (ps.info?.total_layer !== undefined)   printState.totalLayers = ps.info.total_layer
   }
 
-  if (status.display_status) {
-    if (status.display_status.progress !== undefined) {
-      printState.progress = Math.round(status.display_status.progress * 100)
-    }
+  if (status.display_status?.progress !== undefined) {
+    printState.progress = Math.round(status.display_status.progress * 100)
   }
 
   if (status.extruder) {
-    if (status.extruder.temperature !== undefined)
-      printState.nozzleTemp = Math.round(status.extruder.temperature)
-    if (status.extruder.target !== undefined)
-      printState.nozzleTarget = Math.round(status.extruder.target)
+    if (status.extruder.temperature !== undefined) printState.nozzleTemp   = Math.round(status.extruder.temperature)
+    if (status.extruder.target !== undefined)      printState.nozzleTarget = Math.round(status.extruder.target)
   }
 
   if (status.heater_bed) {
-    if (status.heater_bed.temperature !== undefined)
-      printState.bedTemp = Math.round(status.heater_bed.temperature)
-    if (status.heater_bed.target !== undefined)
-      printState.bedTarget = Math.round(status.heater_bed.target)
+    if (status.heater_bed.temperature !== undefined) printState.bedTemp   = Math.round(status.heater_bed.temperature)
+    if (status.heater_bed.target !== undefined)      printState.bedTarget = Math.round(status.heater_bed.target)
   }
 
-  if (status.virtual_sdcard) {
-    if (status.virtual_sdcard.progress !== undefined && printState.progress === 0) {
-      printState.progress = Math.round(status.virtual_sdcard.progress * 100)
-    }
+  if (status.virtual_sdcard?.progress !== undefined && printState.progress === 0) {
+    printState.progress = Math.round(status.virtual_sdcard.progress * 100)
   }
 
   printState.updatedAt = new Date().toISOString()
@@ -223,7 +226,7 @@ server.listen(PORT, () => {
   console.log(`\nEndpoints:`)
   console.log(`  GET  /health   — health check (no auth)`)
   console.log(`  GET  /status   — print state  (Bearer token)`)
-  console.log(`  WS   /stream   — camera feed  (?secret=)\n`)
+  console.log(`  WS   /stream   — camera feed  (?token=jwt or ?token=secret)\n`)
 })
 
 connectMoonraker()
