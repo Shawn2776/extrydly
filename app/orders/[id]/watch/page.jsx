@@ -1,24 +1,22 @@
-"use client";
+"use client"
 
-import { useEffect, useState, useCallback, useRef } from "react";
-import { useParams } from "next/navigation";
+import { useEffect, useState, useCallback, useRef } from "react"
+import { useParams } from "next/navigation"
 
 const StatusBadge = ({ status }) => {
   const styles = {
-    idle: "bg-gray-100 text-gray-600",
+    idle:     "bg-gray-100 text-gray-600",
     printing: "bg-green-100 text-green-700",
-    paused: "bg-yellow-100 text-yellow-700",
+    paused:   "bg-yellow-100 text-yellow-700",
     finished: "bg-blue-100 text-blue-700",
-    error: "bg-red-100 text-red-700",
-  };
+    error:    "bg-red-100 text-red-700",
+  }
   return (
-    <span
-      className={`text-xs font-bold tracking-widest uppercase px-3 py-1 rounded-full ${styles[status] ?? styles.idle}`}
-    >
+    <span className={`text-xs font-bold tracking-widest uppercase px-3 py-1 rounded-full ${styles[status] ?? styles.idle}`}>
       {status}
     </span>
-  );
-};
+  )
+}
 
 const TempGauge = ({ label, current, target }) => (
   <div className="flex flex-col gap-1">
@@ -28,104 +26,101 @@ const TempGauge = ({ label, current, target }) => (
       {target > 0 && <span className="text-sm text-[#888780]">/ {target}°</span>}
     </div>
   </div>
-);
+)
 
 export default function WatchPage() {
-  const { id: orderId } = useParams();
-  const [printState, setPrintState] = useState(null);
-  const [error, setError] = useState(null);
-  const [lastUpdated, setLastUpdated] = useState(null);
-  const [streamConnected, setStreamConnected] = useState(false);
-  const canvasRef = useRef(null);
-  const wsRef = useRef(null);
+  const { id: orderId } = useParams()
+  const [printState, setPrintState] = useState(null)
+  const [error, setError] = useState(null)
+  const [lastUpdated, setLastUpdated] = useState(null)
+  const [frameCount, setFrameCount] = useState(0)
+  const canvasRef = useRef(null)
+  const wsRef = useRef(null)
 
   // ── Fetch stream token then connect camera ────────────────────────────────
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false
 
     async function connectStream() {
-      console.log("connectStream called, orderId:", orderId);
       try {
-        console.log("fetching stream token...");
-        const res = await fetch(`/api/stream-token?orderId=${orderId}`);
-        const data = await res.json();
-        if (!res.ok || !data.token) return;
+        const res = await fetch(`/api/stream-token?orderId=${orderId}`)
+        const data = await res.json()
+        if (!res.ok || !data.token) {
+          console.error("Stream token error:", data)
+          return
+        }
 
-        if (cancelled) return;
+        if (cancelled) return
 
-        const wsUrl = `wss://bridge.extrudly.com/stream?token=${data.token}`;
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
-        ws.binaryType = "arraybuffer";
+        const wsUrl = `wss://bridge.extrudly.com/stream?token=${data.token}`
+        const ws = new WebSocket(wsUrl)
+        wsRef.current = ws
+        ws.binaryType = "arraybuffer"
 
-        ws.onopen = () => {
-          console.log("WebSocket opened!");
-          setStreamConnected(true);
-        };
-        ws.onclose = () => setStreamConnected(false);
-        ws.onerror = () => setStreamConnected(false);
+        ws.onopen = () => console.log("WebSocket opened!")
+        ws.onclose = (e) => console.log("WebSocket closed:", e.code, e.reason)
+        ws.onerror = (e) => console.error("WebSocket error:", e)
 
         ws.onmessage = (event) => {
-          const blob = new Blob([event.data], { type: "image/jpeg" });
-          const url = URL.createObjectURL(blob);
-          const img = new Image();
+          const blob = new Blob([event.data], { type: "image/jpeg" })
+          const url = URL.createObjectURL(blob)
+          const img = new Image()
           img.onload = () => {
-            const canvas = canvasRef.current;
-            if (!canvas) return;
-            const ctx = canvas.getContext("2d");
-            canvas.width = img.width;
-            canvas.height = img.height;
-            ctx.drawImage(img, 0, 0);
-            URL.revokeObjectURL(url);
-          };
-          img.src = url;
-        };
+            const canvas = canvasRef.current
+            if (!canvas) return
+            const ctx = canvas.getContext("2d")
+            canvas.width = img.width
+            canvas.height = img.height
+            ctx.drawImage(img, 0, 0)
+            URL.revokeObjectURL(url)
+            setFrameCount(c => c + 1)
+          }
+          img.src = url
+        }
       } catch (err) {
-        console.error("Stream connect error:", err);
+        console.error("Stream connect error:", err)
       }
     }
 
-    connectStream();
+    connectStream()
 
     return () => {
-      cancelled = true;
-      wsRef.current?.close();
-    };
-  }, [orderId]);
+      cancelled = true
+      wsRef.current?.close()
+    }
+  }, [orderId])
 
   // ── Print status polling ──────────────────────────────────────────────────
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch(`/api/print-status?orderId=${orderId}`);
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error);
-        return;
-      }
-      setPrintState(data);
-      setLastUpdated(new Date());
-      setError(null);
+      const res = await fetch(`/api/print-status?orderId=${orderId}`)
+      const data = await res.json()
+      if (!res.ok) { setError(data.error); return }
+      setPrintState(data)
+      setLastUpdated(new Date())
+      setError(null)
     } catch {
-      setError("Could not reach the server");
+      setError("Could not reach the server")
     }
-  }, [orderId]);
+  }, [orderId])
 
   useEffect(() => {
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 3000);
-    return () => clearInterval(interval);
-  }, [fetchStatus]);
+    fetchStatus()
+    const interval = setInterval(fetchStatus, 3000)
+    return () => clearInterval(interval)
+  }, [fetchStatus])
 
   const formatTime = (secs) => {
-    if (!secs) return "—";
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    return h > 0 ? `${h}h ${m}m` : `${m}m`;
-  };
+    if (!secs) return "—"
+    const h = Math.floor(secs / 3600)
+    const m = Math.floor((secs % 3600) / 60)
+    return h > 0 ? `${h}h ${m}m` : `${m}m`
+  }
 
   return (
     <div className="min-h-screen bg-[#F1EFE8] p-6">
       <div className="max-w-2xl mx-auto flex flex-col gap-6">
+
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
@@ -140,13 +135,17 @@ export default function WatchPage() {
         {/* Camera */}
         <div className="bg-[#2C2C2A] rounded-2xl overflow-hidden aspect-video relative">
           <canvas ref={canvasRef} className="w-full h-full" style={{ minHeight: "200px" }} />
-          {!streamConnected && (
+
+          {/* Overlay — only show until first frame arrives */}
+          {frameCount === 0 && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
               <div className="w-6 h-6 border-2 border-[#EF9F27] border-t-transparent rounded-full animate-spin" />
               <p className="text-sm text-[#888780]">Connecting to camera...</p>
             </div>
           )}
-          {streamConnected && (
+
+          {/* Live badge — show once frames are coming in */}
+          {frameCount > 0 && (
             <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-black/50 px-2.5 py-1 rounded-full">
               <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
               <span className="text-xs text-white font-medium">LIVE</span>
@@ -184,9 +183,7 @@ export default function WatchPage() {
                   <span className="text-xs text-[#888780] font-medium">Layer</span>
                   <span className="text-2xl font-bold text-[#2C2C2A]">
                     {printState.layer ?? "—"}
-                    {printState.totalLayers ? (
-                      <span className="text-sm font-normal text-[#888780]"> / {printState.totalLayers}</span>
-                    ) : null}
+                    {printState.totalLayers ? <span className="text-sm font-normal text-[#888780]"> / {printState.totalLayers}</span> : null}
                   </span>
                 </div>
                 <div className="flex flex-col gap-1">
@@ -215,5 +212,5 @@ export default function WatchPage() {
         )}
       </div>
     </div>
-  );
+  )
 }
