@@ -4,6 +4,7 @@ const cors = require("cors")
 const { WebSocketServer, WebSocket } = require("ws")
 const http = require("http")
 const crypto = require("crypto")
+const { jwtVerify } = require("jose")
 
 const {
   PRINTER_IP,
@@ -18,30 +19,17 @@ if (!PRINTER_IP || !BRIDGE_SECRET) {
   process.exit(1)
 }
 
-// ─── Simple JWT verify (no external deps) ────────────────────────────────────
-function base64urlDecode(str) {
-  str = str.replace(/-/g, "+").replace(/_/g, "/")
-  while (str.length % 4) str += "="
-  return Buffer.from(str, "base64")
-}
-
-function verifyJWT(token) {
+// ─── JWT verify using jose (same library as Next.js side) ─────────────────────
+async function verifyStreamToken(token) {
+  // Accept raw secret for admin/testing
+  if (token === BRIDGE_SECRET) return { admin: true }
+  // Verify JWT
   try {
-    const parts = token.split(".")
-    if (parts.length !== 3) return null
-
-    const signature = crypto
-      .createHmac("sha256", BRIDGE_SECRET)
-      .update(`${parts[0]}.${parts[1]}`)
-      .digest("base64url")
-
-    if (signature !== parts[2]) return null
-
-    const payload = JSON.parse(base64urlDecode(parts[1]).toString())
-    if (payload.exp && Date.now() / 1000 > payload.exp) return null
-
+    const secret = new TextEncoder().encode(BRIDGE_SECRET)
+    const { payload } = await jwtVerify(token, secret)
     return payload
-  } catch {
+  } catch (e) {
+    console.log("JWT verify failed:", e.message)
     return null
   }
 }
@@ -90,21 +78,19 @@ const server = http.createServer(app)
 
 const wss = new WebSocketServer({ server, path: "/stream" })
 
-wss.on("connection", (ws, req) => {
+wss.on("connection", async (ws, req) => {
   const url = new URL(req.url, `http://localhost`)
   const token = url.searchParams.get("token")
 
-  // Accept either a valid JWT (customer) or the raw secret (admin/testing)
-  const isRawSecret = token === BRIDGE_SECRET
-  const isValidJWT = !isRawSecret && verifyJWT(token)
+  const payload = await verifyStreamToken(token)
 
-  if (!isRawSecret && !isValidJWT) {
+  if (!payload) {
     console.log("🚫  Rejected stream connection — invalid token")
     ws.close(1008, "Unauthorized")
     return
   }
 
-  console.log("📺  Client connected to camera stream")
+  console.log("📺  Client connected to camera stream", payload.admin ? "(admin)" : `order ${payload.orderId}`)
 
   const http_ = require("http")
   const camReq = http_.get(`http://${PRINTER_IP}:${PRINTER_CAMERA_PORT}`, (camRes) => {
