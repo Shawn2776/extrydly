@@ -136,7 +136,7 @@ export default function WatchPage() {
 
         {/* Camera */}
         <div className="bg-[#2C2C2A] rounded-2xl overflow-hidden aspect-video relative">
-          <canvas ref={canvasRef} className="w-full h-full object-contain" />
+          <canvas ref={canvasRef} className="w-full h-full" style={{ minHeight: "200px" }} />
           {!streamConnected && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
               <div className="w-6 h-6 border-2 border-[#EF9F27] border-t-transparent rounded-full animate-spin" />
