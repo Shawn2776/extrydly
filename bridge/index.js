@@ -88,7 +88,7 @@ wss.on("connection", async (ws, req) => {
 
   const http_ = require("http");
   const camReq = http_.get(
-    { hostname: PRINTER_IP, port: PRINTER_FLUIDD_PORT, path: "/webcam?action=stream", timeout: 0 },
+    { hostname: PRINTER_IP, port: PRINTER_FLUIDD_PORT, path: "/webcam/?action=stream", timeout: 0 },
     (camRes) => {
       console.log("📷  Camera status:", camRes.statusCode, "type:", camRes.headers["content-type"]);
       camRes.on("data", (chunk) => {
