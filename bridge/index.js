@@ -93,7 +93,8 @@ wss.on("connection", async (ws, req) => {
   console.log("📺  Client connected to camera stream", payload.admin ? "(admin)" : `order ${payload.orderId}`)
 
   const http_ = require("http")
-  const camReq = http_.get(`http://${PRINTER_IP}:${PRINTER_CAMERA_PORT}`, (camRes) => {
+  const camReq = http_.get({ hostname: PRINTER_IP, port: PRINTER_CAMERA_PORT, path: "/", headers: { "Accept": "multipart/x-mixed-replace" }, timeout: 0 }, (camRes) => {
+    console.log("📷  Camera status:", camRes.statusCode, "type:", camRes.headers["content-type"])
     camRes.on("data", (chunk) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(chunk)
