@@ -58,7 +58,10 @@ export default function WatchPage() {
         wsRef.current = ws;
         ws.binaryType = "arraybuffer";
 
-        ws.onopen = () => setStreamConnected(true);
+        ws.onopen = () => {
+          console.log("WebSocket opened!");
+          setStreamConnected(true);
+        };
         ws.onclose = () => setStreamConnected(false);
         ws.onerror = () => setStreamConnected(false);
 
